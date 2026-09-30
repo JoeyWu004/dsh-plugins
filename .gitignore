@@ -1,0 +1,21 @@
+# local-plugins 的忽略规则（本目录是自写插件的唯一源头，见 README.md）。
+# 原则：插件源码（package.json / lib / README.md / deploy.ps1 / tools）必须全部提交，
+# 这里只排除本机产物与留档目录。
+
+# 留档：已停用的旧副本与旧脚本，不参与任何流程
+_retired/
+
+# 编辑器与系统产物
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node 与临时文件
+node_modules/
+*.log
+*.tmp
+*.bak

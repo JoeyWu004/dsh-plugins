@@ -2,6 +2,7 @@
   "name": "dsh-client-ui-account-balance",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Live account balance indicator for the DSH desktop sidebar footer",
   "type": "module",
   "main": "lib/index.js",

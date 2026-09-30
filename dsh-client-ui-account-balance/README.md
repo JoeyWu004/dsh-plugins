@@ -17,10 +17,12 @@
 const result = await ctx.remote.account.getBalance({
   version, locale, timezoneOffsetSeconds,
 })
-// result.ok === true 时，result.value = [{ currency: 'CNY', balance: '12.34' }, ...]
+// result.ok === true 时，result.value 是「余额结果对象」：
+//   { status, value: [{ currency: 'CNY', balance: '12.34' }, ...], bonusWallets: [...] }
+// 本插件同时兼容「直接返回钱包数组」的形状，以防版本差异。
 ```
 
-本插件只做三件事：按 60 秒轮询调用它、按 Platform 的显示规则格式化（两位小数 / 亚分显示 `<¥0.01` / 千分位）、把结果渲染进插槽。
+本插件只做三件事：按 60 秒轮询调用它、按 Platform 的显示规则格式化（向下取整到分 / 亚分显示 `<¥0.01` / 千分位）、把结果渲染进插槽。只有赠送余额时显示「赠 ¥5.00」。
 
 ## 文件
 
@@ -32,14 +34,15 @@ const result = await ctx.remote.account.getBalance({
 
 ## 安装
 
-插件被安装到两个位置：
+安装要做两件事：把插件目录放进目标 profile 的 `node_modules`，并在该 profile 的 `cordis.patch.yml` 末尾追加插入条目。
 
-| 位置 | 用途 |
-|---|---|
-| `C:\Users\Lenovo\.dsh\profiles\desktop\node_modules\dsh-client-ui-account-balance\` | 实际被 loader 解析的位置 |
-| `C:\Users\Lenovo\.dsh\plugins\dsh-client-ui-account-balance\` | 稳定副本，供重新安装用 |
+```powershell
+# 以 desktop profile 为例；$env:USERPROFILE\.dsh 即 $DSH_HOME 的默认值
+$dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
+Copy-Item '.\dsh-client-ui-account-balance' (Join-Path $dshHome 'profiles\desktop\node_modules') -Recurse -Force
+```
 
-并在 `C:\Users\Lenovo\.dsh\profiles\desktop\cordis.patch.yml` 末尾追加了插入条目：
+追加的插入条目：
 
 ```yaml
 - insert:
@@ -51,7 +54,7 @@ const result = await ctx.remote.account.getBalance({
 
 ## 卸载
 
-删除 `cordis.patch.yml` 里那条 `insert` 条目即可（安装时已备份为 `cordis.patch.yml.bak`），然后重启应用。两个 node_modules 副本可以一并删除。
+删除 `cordis.patch.yml` 里那条 `insert` 条目，然后重启应用；profile 的 `node_modules` 与 `$DSH_HOME\plugins` 下的副本可一并删除。
 
 ## 维护提示
 

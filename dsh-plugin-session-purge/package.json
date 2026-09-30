@@ -2,6 +2,7 @@
   "name": "dsh-plugin-session-purge",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Host command plus a session-row menu entry that permanently deletes archived DSH sessions",
   "type": "module",
   "main": "lib/index.js",

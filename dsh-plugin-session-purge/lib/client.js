@@ -43,6 +43,8 @@ window.__ModuleLoader__.load({
 		const TURN_CUT_COMMAND = "turn-cut"
 		const PURGE_ANY_COMMAND = "purge-session-any"
 		const ATTACH_COMMAND = "attach-session"
+		/** 把会话移动到另一个工作台的宿主命令。 */
+		const MOVE_COMMAND = "move-session"
 		/** 排序：内置项 pin=100 / rename=200 / fork=300 / archive=400，本项排在最后。 */
 		const ORDER = 500
 		/** 给自定义图标按钮加悬停反馈用的一次性样式 id。 */
@@ -167,21 +169,84 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 有界地等待一个条件成立。
+		 *
+		 * 用于等 fork 出来的新会话进入客户端列表：`sessions.binding(id)` 对
+		 * 「既未列出也未被 scoped」的会话返回 undefined，而 fork 的返回并不保证
+		 * 客户端列表已经跟到——不等就会静默失效。
+		 * @param check - 返回真值即视为成立。
+		 * @param timeoutMs - 等待上限（毫秒）。
+		 * @returns 条件成立时的返回值；超时返回 undefined。
+		 */
+		async function waitFor(check, timeoutMs) {
+			const deadline = Date.now() + timeoutMs
+			for (;;) {
+				const value = check()
+				if (value !== undefined && value !== null && value !== false) return value
+				if (Date.now() >= deadline) return undefined
+				await new Promise((resolve) => setTimeout(resolve, 200))
+			}
+		}
+
+		/**
+		 * 一个由**单个**定时器驱动的共享心跳源。
+		 *
+		 * 早先每个垃圾桶按钮各自 `setInterval(1000)`：一轮一个「是否正在生成」的轮询，
+		 * 兜底按钮再加一个，35 轮的会话就是每秒几十次 DOM 查询。现在只保留一个定时器，
+		 * DOM 查询每 tick 只做一次，订阅者读缓存值。
+		 * @param ctx - 客户端插件上下文。
+		 * @param intervalMs - 心跳间隔。
+		 * @returns `{ subscribe, isRunning }`。
+		 */
+		function createTickSource(ctx, intervalMs) {
+			const listeners = new Set()
+			let running = turnRunning()
+			ctx.effect(() => {
+				const timer = setInterval(() => {
+					running = turnRunning()
+					for (const listener of listeners) listener()
+				}, intervalMs)
+				return () => clearInterval(timer)
+			}, "session-purge: shared turn tick")
+			return {
+				subscribe(listener) {
+					listeners.add(listener)
+					return () => {
+						listeners.delete(listener)
+					}
+				},
+				isRunning: () => running,
+			}
+		}
+
+		/**
 		 * 丢弃某个会话里排队中的待发送消息（输入框上方 QueueDock 的那些条目）。
 		 *
 		 * 队列由驱动写入会话事件（`agent/inbox/spliced`）后投影而来，分叉会把它一起
 		 * 复制到新会话——于是"删除某一轮"之后，该轮之前排队的消息会出现在新会话的
-		 * 输入框上方。这里在新会话建立后立即清掉，避免它被误发出去。
+		 * 输入框上方。这里在新会话建立后清掉，避免它被误发出去。
+		 *
+		 * 必须在**有界等待**中拿到绑定与 inbox 投影：fork 刚返回时新会话很可能还没进
+		 * 客户端列表，直接读会一条都清不掉（这正是此前的静默失效）。
 		 * @param ctx - 客户端插件上下文。
 		 * @param sessionId - 目标会话 id。
 		 * @returns 成功清除的条数。
 		 */
 		async function dropQueuedItems(ctx, sessionId) {
 			const sessions = typeof ctx.get === "function" ? ctx.get("sessions") : undefined
-			const binding = sessions !== undefined && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined
-			const face = binding?.session?.projections?.faceOf?.("inbox")
-			const inbox = typeof face?.getSnapshot === "function" ? face.getSnapshot() : undefined
-			if (inbox === null || inbox === undefined) return 0
+			if (sessions === undefined || typeof sessions.binding !== "function") return 0
+			const face = await waitFor(() => {
+				const binding = sessions.binding(sessionId)
+				const candidate = binding?.session?.projections?.faceOf?.("inbox")
+				if (typeof candidate?.getSnapshot !== "function") return undefined
+				const snapshot = candidate.getSnapshot()
+				return snapshot === null || snapshot === undefined ? undefined : candidate
+			}, 5000)
+			if (face === undefined) {
+				console.warn("[session-purge] 5 秒内没能拿到新会话的 inbox 投影，继承的排队消息未清理")
+				return 0
+			}
+			const inbox = face.getSnapshot()
 			const items = [...(inbox["next-turn"] ?? []), ...(inbox["next-step"] ?? [])]
 			let removed = 0
 			for (const item of items) {
@@ -206,6 +271,8 @@ window.__ModuleLoader__.load({
 			ensureActionStyles()
 			// 页面加载即应用历史隐藏记录（选择器按会话作用域，不需跟踪当前会话）。
 			renderHiddenCss()
+			// 全插件共用一个 1 秒心跳，避免每个垃圾桶按钮各起一个定时器。
+			const tick = createTickSource(ctx, 1000)
 
 			/**
 			 * 提示一条信息，缺少 alert 时退回 console。
@@ -251,20 +318,152 @@ window.__ModuleLoader__.load({
 				const closeMenu = typeof props.useMenuOpenState === "function"
 					? props.useMenuOpenState()[1]
 					: undefined
+				// 宿主只接受归档集合里的会话，未归档时直接禁用——否则点了必然报错。
+				const archived = archivedSessionIds().has(props.sessionId)
 				return react_jsx_runtime.jsx(primitives.MenuItemButton, {
 					icon: react_jsx_runtime.jsx(primitives.IconTrashOutlineRegular, { size: 14 }),
 					// 原语内置的危险色（跟随主题的红色），比自己写 style 更规范。
 					danger: true,
+					disabled: !archived,
 					onSelect: () => {
 						if (typeof closeMenu === "function") closeMenu(false)
 						void runPurge(props.sessionId, props.displayTitle)
 					},
-					children: "删除会话",
+					children: archived ? "删除会话" : "删除会话（需先归档）",
 				})
 			}
 
 			ctx.slots.inject(MENU_SLOT, () =>
 				ctx.slots.register({ name: MENU_SLOT, id: "purge-session", order: ORDER }, PurgeSessionMenuItem))
+
+			/**
+			 * 读取当前归档集合（客户端 workspaces 快照携带，与宿主同源）。
+			 * @returns 归档会话 id 集合。
+			 */
+			const archivedSessionIds = () => {
+				const service = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined
+				const snapshot = typeof service?.list?.getSnapshot === "function" ? service.list.getSnapshot() : undefined
+				return new Set(Array.isArray(snapshot?.archivedSessionIds) ? snapshot.archivedSessionIds : [])
+			}
+
+			/**
+			 * 读取工作台列表（客户端 `workspaces` 服务的快照）。
+			 * @returns `{ id, title, path }[]`。
+			 */
+			const listWorkspaces = () => {
+				const service = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined
+				const snapshot = typeof service?.list?.getSnapshot === "function" ? service.list.getSnapshot() : undefined
+				const items = Array.isArray(snapshot?.items) ? snapshot.items : []
+				return items.map((item) => ({
+					id: item?.workspaceId,
+					title: typeof item?.title === "string" && item.title !== "" ? item.title : item?.path,
+					path: item?.path,
+				}))
+			}
+
+			/**
+			 * 读取某个会话记录的 cwd（用来把"当前所属工作台"标出来）。
+			 * @param sessionId - 会话 id。
+			 * @returns cwd，读不到时 undefined。
+			 */
+			const sessionCwd = (sessionId) => {
+				const service = typeof ctx.get === "function" ? ctx.get("sessions") : undefined
+				const snapshot = typeof service?.list?.getSnapshot === "function" ? service.list.getSnapshot() : undefined
+				const summary = snapshot?.byId?.[sessionId]
+				return typeof summary?.cwd === "string" ? summary.cwd : undefined
+			}
+
+			/**
+			 * 「移动到工作台…」菜单项：点开后在同一个菜单里列出全部工作台。
+			 *
+			 * 菜单只在入口显式调用 `closeMenu` 时才关闭，所以这里可以安全地把列表展开。
+			 * @param props - 插槽属性（sessionId）与菜单开关状态。
+			 * @returns 折叠态一行，或展开态的工作台列表。
+			 */
+			const MoveToWorkspaceMenuItem = (props) => {
+				if (primitives === undefined || primitives.MenuItemButton === undefined) return null
+				const [expanded, setExpanded] = react.useState(false)
+				const closeMenu = typeof props.useMenuOpenState === "function"
+					? props.useMenuOpenState()[1]
+					: undefined
+				const workspaces = listWorkspaces()
+				const currentPath = sessionCwd(props.sessionId)
+
+				/**
+				 * 调宿主命令把该会话移入目标工作台。
+				 * @param target - 目标工作台。
+				 */
+				const move = async (target) => {
+					if (typeof closeMenu === "function") closeMenu(false)
+					try {
+						const result = await ctx.remote.commands.execute(
+							props.sessionId,
+							`/${MOVE_COMMAND} ${props.sessionId} ${target.id}`,
+							[],
+						)
+						if (!result.ok) {
+							notify(`移动失败：${result.error.code}: ${result.error.message}`)
+							return
+						}
+						const outcome = result.value === undefined ? undefined : result.value.result
+						if (outcome === undefined) {
+							notify(`移动失败：未知命令 ${MOVE_COMMAND}`)
+							return
+						}
+						if (outcome.kind === "error") {
+							notify(`移动失败：${outcome.text}`)
+							return
+						}
+						notify(outcome.text)
+					} catch (error) {
+						console.error("[session-purge] move-workspace threw:", error)
+						notify(`移动失败：${error instanceof Error ? error.message : String(error)}`)
+					}
+				}
+
+				if (!expanded) {
+					return react_jsx_runtime.jsx(primitives.MenuItemButton, {
+						onSelect: () => setExpanded(true),
+						children: "移动到工作台…",
+					})
+				}
+				if (workspaces.length === 0) {
+					return react_jsx_runtime.jsx(primitives.MenuItemButton, {
+						disabled: true,
+						children: "没有其他工作台",
+					})
+				}
+				return react_jsx_runtime.jsxs(react_jsx_runtime.Fragment, {
+					children: [
+						react_jsx_runtime.jsx("div", {
+							style: {
+								padding: "4px 12px",
+								fontSize: "12px",
+								opacity: 0.6,
+								whiteSpace: "nowrap",
+							},
+							children: "移动到：",
+						}),
+						...workspaces.map((workspace) =>
+							react_jsx_runtime.jsx(primitives.MenuItemButton, {
+								key: workspace.id,
+								disabled: workspace.path !== undefined && workspace.path === currentPath,
+								onSelect: () => {
+									void move(workspace)
+								},
+								children: `${workspace.title ?? workspace.path}${workspace.path !== undefined && workspace.path === currentPath ? "（当前）" : ""}`,
+							}),
+						),
+						react_jsx_runtime.jsx(primitives.MenuItemButton, {
+							onSelect: () => setExpanded(false),
+							children: "取消",
+						}),
+					],
+				})
+			}
+
+			ctx.slots.inject(MENU_SLOT, () =>
+				ctx.slots.register({ name: MENU_SLOT, id: "move-workspace", order: ORDER - 50 }, MoveToWorkspaceMenuItem))
 
 			//#endregion
 
@@ -424,11 +623,8 @@ window.__ModuleLoader__.load({
 			 * @returns 是否有轮次正在生成。
 			 */
 			const useTurnBusy = () => {
-				const [busy, setBusy] = react.useState(turnRunning())
-				react.useEffect(() => {
-					const timer = setInterval(() => setBusy(turnRunning()), 1000)
-					return () => clearInterval(timer)
-				}, [])
+				const [busy, setBusy] = react.useState(() => tick.isRunning())
+				react.useEffect(() => tick.subscribe(() => setBusy(tick.isRunning())), [])
 				return busy
 			}
 
@@ -501,8 +697,8 @@ window.__ModuleLoader__.load({
 						setNeeded(holder !== null && holder.querySelector(`[${MAIN_ATTR}]`) === null)
 					}
 					check()
-					const timer = setInterval(check, 1000)
-					return () => clearInterval(timer)
+					// 复用共享心跳，不再各自 setInterval。
+					return tick.subscribe(check)
 				}, [])
 				if (!needed) return null
 				return react_jsx_runtime.jsx(PurgeIconButton, { attr: FALLBACK_ATTR, innerRef })
