@@ -32,6 +32,10 @@ const result = await ctx.remote.account.getBalance({
 | `lib/client.js` | 浏览器半边：轮询余额并注册侧栏插槽组件（手写的 `__ModuleLoader__` bundle，无构建步骤） |
 | `package.json` | 声明 `exports["./client"]` 与 `dsh.client` 元数据 |
 
+## 免责与非官方声明
+
+本插件是**第三方非官方**扩展，与 DeepSeek 官方无关，不由官方提供支持或担保。它只读取并展示宿主提供的账户余额，不修改任何数据。软件按「原样」提供，不提供任何担保，使用风险自负，完整条款见 [LICENSE](../LICENSE)。
+
 ## 安装
 
 安装要做两件事：把插件目录放进目标 profile 的 `node_modules`，并在该 profile 的 `cordis.patch.yml` 末尾追加插入条目。

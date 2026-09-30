@@ -84,6 +84,14 @@ pwsh -File .\deploy.ps1 -Profile web    # 其他 profile
 
 它们不发布到 npm（`"private": true`），请直接从本仓库复制进 profile 使用。
 
+## 免责与非官方声明
+
+本仓库是**第三方非官方插件**，与 DeepSeek 官方无关，也不由官方提供支持或担保。
+
+- `dsh-plugin-session-purge` 会**永久删除**会话数据（磁盘日志、搬迁备份、投影缓存），**不可撤销**；其中的 `/purge-session-any` 按 id 删除、**不检查归档状态**。使用前请自行评估并做好备份。
+- `dsh-client-ui-account-balance` 只读取并展示账户余额，不修改任何数据。
+- 软件按「原样」提供，不提供任何明示或默示的担保；使用风险自负。完整条款见 [LICENSE](./LICENSE)。
+
 ## 许可
 
 MIT，见 [LICENSE](./LICENSE)。
